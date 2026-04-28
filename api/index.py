@@ -1,26 +1,17 @@
 from http.server import BaseHTTPRequestHandler
 import requests
 import re
-import time
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        # 目标房产页面
         url = "https://www.property.com.au/nsw/padstow-2211/arab-rd/62-pid-63112/"
-        
-        # 创建一个 Session 对象，模拟浏览器的持续访问
-        session = requests.Session()
         
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "Accept-Language": "en-AU,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Cache-Control": "max-age=0",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-AU,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate",  # 告诉服务器我们可以处理压缩
         }
         
         self.send_response(200)
@@ -28,38 +19,32 @@ class handler(BaseHTTPRequestHandler):
         self.end_headers()
         
         try:
-            # 1. 先访问首页，获取必要的 Cookie
-            session.get("https://www.property.com.au/", headers=headers, timeout=5)
-            time.sleep(1) # 稍微停顿，模拟真人
+            # 使用 requests 自动处理解压
+            res = requests.get(url, headers=headers, timeout=15)
+            html = res.text  # requests 会根据 Header 自动解密/解压乱码
             
-            # 2. 带着 Cookie 访问目标房产页
-            res = session.get(url, headers=headers, timeout=10)
-            html = res.text
+            # --- 根据你提供的源码截图进行精准匹配 ---
+            # 源码中是 "...property value of 62 Arab Rd... is $1,460,000"
+            price_match = re.search(r'property\s+value.*?\$([\d,]+)', html, re.IGNORECASE | re.DOTALL)
+            rent_match = re.search(r'rental\s+income.*?\$([\d,]+)', html, re.IGNORECASE | re.DOTALL)
             
-            # 打印前200字到日志，看看是不是又撞见人机验证了
-            print(f"DEBUG HTML: {html[:200]}")
-            
-            # 尝试多种正则匹配方式
-            # 方式1：匹配价格
-            p_match = re.search(r'property\s+value.*?\$([\d,]+)', html, re.I | re.S)
-            # 方式2：匹配租金
-            r_match = re.search(r'rental\s+income.*?\$([\d,]+)', html, re.I | re.S)
-            
-            p_val = p_match.group(1).replace(',', '') if p_match else "0"
-            r_val = r_match.group(1).replace(',', '') if r_match else "0"
-            
-            # 方式3：如果还是没找到，暴力搜索页面上所有的数字
-            if p_val == "0":
-                all_prices = re.findall(r'\$([\d,]{5,9})', html) # 寻找5-9位的金钱数字
-                if all_prices:
-                    p_val = all_prices[0].replace(',', '')
-                
-                all_rents = re.findall(r'\$([\d,]{3,4})', html) # 寻找3-4位的金钱数字
-                if all_rents:
-                    r_val = all_rents[0].replace(',', '')
+            p_val = price_match.group(1).replace(',', '') if price_match else "0"
+            r_val = rent_match.group(1).replace(',', '') if rent_match else "0"
 
+            # 如果精准匹配失败，使用保底方案（提取所有金额并按大小归类）
+            if p_val == "0":
+                all_amounts = re.findall(r'\$([\d,]+)', html)
+                nums = sorted([int(a.replace(',', '')) for a in all_amounts], reverse=True)
+                if nums:
+                    p_val = str(nums[0]) # 最大的通常是房价
+                    for n in nums:
+                        if 300 < n < 3000: # 寻找合理的周租金范围
+                            r_val = str(n)
+                            break
+            
+            print(f"Final Result: {p_val},{r_val}")
             self.wfile.write(f"{p_val},{r_val}".encode('utf-8'))
             
         except Exception as e:
-            print(f"ERROR: {str(e)}")
+            print(f"Error: {str(e)}")
             self.wfile.write("0,0".encode('utf-8'))
