@@ -1,42 +1,50 @@
 const axios = require('axios');
 
 module.exports = async (req, res) => {
-  // 62 Arab Road, Padstow 的官方属性查询接口
-  // 这是一个公开的公共地理信息系统接口，非常稳定
-  const govUrl = "https://portal.spatial.nsw.gov.au/server/rest/services/NSW_Property_Stock_And_Sales/MapServer/find";
+  // 1. 设置查询参数
+  const address = "62 ARAB ROAD PADSTOW";
+  const baseUrl = "https://portal.spatial.nsw.gov.au/server/rest/services/NSW_Property_Stock_And_Sales/MapServer/find";
   
   try {
-    const response = await axios.get(govUrl, {
+    // 第一步：先模糊匹配地址，确保拿到正确的图层对象
+    const response = await axios.get(baseUrl, {
       params: {
-        searchText: '62 ARAB ROAD PADSTOW',
-        layers: '0', 
+        searchText: address,
+        layers: '0',        // 对应的图层索引
         f: 'json',
         sr: '4326',
-        contains: true
+        contains: true,
+        searchFields: 'PROP_ADDR' // 显式指定在地址字段搜索
       },
-      timeout: 8000 // 这种 API 响应极快，无需 30 秒
+      timeout: 10000
     });
 
     const results = response.data.results;
     
-    // 默认返回值，如果没查到则显示 0
-    let landValue = "0";
-    let propId = "0";
-
-    if (results && results.length > 0) {
-      // 提取政府原始字段
-      const attr = results[0].attributes;
-      // 核心：LAND_VALUE 是土地税依据，PROPERTY_ID 是官方编码
-      landValue = attr.LAND_VALUE || attr.VALUATION_AMOUNT || "0";
-      propId = attr.PROPERTY_ID || "0";
+    if (!results || results.length === 0) {
+      // 如果搜不到，返回 0,0 并在后台打日志
+      console.log("Address not found in gov database");
+      return res.status(200).send("0,0");
     }
 
-    // 设置 Content-Type 为文本，方便 ESP32 直接读取
+    // 第二步：从结果中提取数据
+    // 政府 API 返回的字段名可能在不同年份有细微差别，我们做兼容处理
+    const attr = results[0].attributes;
+    
+    // 土地评估价字段 (Land Value)
+    const landValue = attr.LAND_VALUE || attr.VALUATION_AMOUNT || attr.VALN_AMT || "0";
+    
+    // 物业 ID 或 上次交易价
+    const extraInfo = attr.PROPERTY_ID || attr.PROP_ID || attr.LAST_SALE_PRICE || "0";
+
+    // 设置返回头
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.status(200).send(`${landValue},${propId}`);
+    
+    // 最终输出：土地价值,辅助信息
+    res.status(200).send(`${landValue},${extraInfo}`);
 
   } catch (error) {
-    // 只有网络完全断掉才会进这里
-    res.status(200).send("connection_error,0");
+    console.error("API Error:", error.message);
+    res.status(200).send("error,0");
   }
 };
