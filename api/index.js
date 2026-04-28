@@ -1,50 +1,58 @@
 const axios = require('axios');
 
 module.exports = async (req, res) => {
-  // 1. 设置查询参数
-  const address = "62 ARAB ROAD PADSTOW";
-  const baseUrl = "https://portal.spatial.nsw.gov.au/server/rest/services/NSW_Property_Stock_And_Sales/MapServer/find";
+  // 1. NSW 政府官方地理编码与属性服务接口
+  const searchUrl = "https://portal.spatial.nsw.gov.au/server/rest/services/NSW_Geocoded_Addresses/MapServer/find";
+  const valuationUrl = "https://portal.spatial.nsw.gov.au/server/rest/services/NSW_Property_Stock_And_Sales/MapServer/find";
   
   try {
-    // 第一步：先模糊匹配地址，确保拿到正确的图层对象
-    const response = await axios.get(baseUrl, {
+    // 第一步：通过地址获取该物业的官方 Property ID (PID)
+    const geoResponse = await axios.get(searchUrl, {
       params: {
-        searchText: address,
-        layers: '0',        // 对应的图层索引
+        searchText: '62 ARAB RD PADSTOW', // 政府数据库通常使用 RD 缩写
+        layers: '0',
         f: 'json',
         sr: '4326',
-        contains: true,
-        searchFields: 'PROP_ADDR' // 显式指定在地址字段搜索
+        contains: true
       },
-      timeout: 10000
+      timeout: 8000
     });
 
-    const results = response.data.results;
-    
-    if (!results || results.length === 0) {
-      // 如果搜不到，返回 0,0 并在后台打日志
-      console.log("Address not found in gov database");
-      return res.status(200).send("0,0");
+    const geoResults = geoResponse.data.results;
+    if (!geoResults || geoResults.length === 0) {
+      return res.status(200).send("address_not_found,0");
     }
 
-    // 第二步：从结果中提取数据
-    // 政府 API 返回的字段名可能在不同年份有细微差别，我们做兼容处理
-    const attr = results[0].attributes;
-    
-    // 土地评估价字段 (Land Value)
-    const landValue = attr.LAND_VALUE || attr.VALUATION_AMOUNT || attr.VALN_AMT || "0";
-    
-    // 物业 ID 或 上次交易价
-    const extraInfo = attr.PROPERTY_ID || attr.PROP_ID || attr.LAST_SALE_PRICE || "0";
+    // 提取 Property ID
+    const pid = geoResults[0].attributes.PROPERTY_ID || geoResults[0].attributes.PROP_ID;
 
-    // 设置返回头
+    // 第二步：使用获取到的 PID 精准查询土地价值
+    const valResponse = await axios.get(valuationUrl, {
+      params: {
+        searchText: pid,
+        layers: '0', 
+        f: 'json',
+        sr: '4326'
+      },
+      timeout: 8000
+    });
+
+    const valResults = valResponse.data.results;
+    let landValue = "0";
+
+    if (valResults && valResults.length > 0) {
+      const attr = valResults[0].attributes;
+      // 获取估价金额 (VALN_AMT 是该图层的标准数值字段)
+      landValue = attr.VALN_AMT || attr.LAND_VALUE || attr.VALUATION_AMOUNT || "0";
+    }
+
+    // 设置返回头，确保 ESP32 拿到的只有纯数字字符串
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    
-    // 最终输出：土地价值,辅助信息
-    res.status(200).send(`${landValue},${extraInfo}`);
+    res.status(200).send(`${landValue},${pid}`);
 
   } catch (error) {
-    console.error("API Error:", error.message);
-    res.status(200).send("error,0");
+    // 只有在政府服务器宕机或网络中断时才会触发
+    console.error("API Fetch Failed:", error.message);
+    res.status(200).send("service_unavailable,0");
   }
 };
